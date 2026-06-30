@@ -1,0 +1,118 @@
+@startuml
+title CinemaAbyss Target (To-Be) Container Diagram
+
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/v2.0.1/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+
+' Внешние системы (располагаем слева/справа от основного контура для бесконфликтной верстки)
+System_Ext(payment_gateway, "Платежная система", "Эквайринг для обработки платежей.")
+
+System_Boundary(cinemaabyss, "Экосистема КиноБездна") {
+    
+    Container(spa, "Web / Mobile / Smart TV App", "React / Swift / Kotlin / Java", "Предоставляет интерфейс для выбора фильмов, оплаты подписок и просмотра видео.")
+    
+    Container(proxy, "API Gateway / Router", "Go / Envoy", "Единая точка входа. Выполняет маршрутизацию всех запросов, балансировку нагрузки, авторизацию и проксирование медиа-трафика.")
+    
+    ' Сервисы упорядочены слева направо в соответствии с внешними интеграциями
+    Container(payments_service, "Payments Service", "Go", "Обрабатывает платежи и транзакции, интегрируется с платежным шлюзом.")
+    Container(subscriptions_service, "Subscriptions Service", "Go", "Управляет тарифными планами, подписками пользователей и скидками.")
+    Container(users_service, "Users Service", "Go", "Управляет профилями пользователей, аутентификацией и сессиями.")
+    Container(events_service, "Events & Integration Service", "Go", "Служит точкой сбора аналитики (clickstream) от SPA. Выступает интеграционным мостом: транслирует события из Kafka во внешний RabbitMQ.")
+    Container(recommendations_service, "Recommendations Service", "Go", "Управляет персональными подборками фильмов, кэширует их и предоставляет API для SPA.")
+    Container(movies_service, "Movies Service", "Go", "Управляет каталогом фильмов. Проверяет права доступа и координирует получение контента из хранилища и внешних источников.")
+    
+    ' Базы данных под своими сервисами
+    ContainerDb(payments_db, "Payments Database", "PostgreSQL", "Хранит историю транзакций и статусы оплат.")
+    ContainerDb(subscriptions_db, "Subscriptions Database", "PostgreSQL", "Хранит информацию о подписках пользователей.")
+    ContainerDb(users_db, "Users Database", "PostgreSQL", "Хранит данные пользователей, хэши паролей и сессии.")
+    ContainerDb(recommendations_db, "Recommendations Database", "Redis / PostgreSQL", "Кэширует и хранит персональные подборки фильмов.")
+    ContainerDb(movies_db, "Movies Database", "PostgreSQL", "Хранит метаданные фильмов, жанры, актеров и рейтинги.")
+    
+    Container(kafka, "Kafka Message Broker", "Apache Kafka", "Внутренний брокер сообщений для асинхронного взаимодействия микросервисов (топики: movie-events, user-events, payment-events).")
+}
+
+' Внешние системы (справа)
+System_Ext(cdn, "CDN / Video Storage", "Сеть доставки контента. Хранит видеофайлы.")
+System_Ext(online_cinemas, "Внешние онлайн-кинотеатры", "Сторонние площадки-партнеры и открытые источники контента.")
+
+' Внешняя рекомендательная система (располагаем внизу под интеграционными сервисами)
+System_Boundary(rec_system_boundary, "Внешняя рекомендательная система") {
+    ContainerQueue_Ext(rec_queue_in, "RabbitMQ Inbound Queue", "RabbitMQ", "Очередь для приема событий от КиноБездны.")
+    System_Ext(rec_engine, "Рекомендательный движок", "Сторонний сервис подбора персональных рекомендаций.")
+    ContainerQueue_Ext(rec_queue_out, "RabbitMQ Outbound Queue", "RabbitMQ", "Очередь для передачи рассчитанных рекомендаций.")
+}
+
+Person(user, "Пользователь", "Зритель онлайн-кинотеатра")
+
+' Взаимодействие пользователя
+Rel(user, spa, "Просматривает фильмы, оплачивает подписку")
+
+' Взаимодействие приложений с API Gateway
+Rel_D(spa, proxy, "Отправляет все запросы к API и запрашивает видеопоток", "HTTPS / JSON / HLS")
+
+' Маршрутизация на API Gateway
+Rel_D(proxy, payments_service, "Маршрутизирует /api/payments", "HTTP / JSON")
+Rel_D(proxy, subscriptions_service, "Маршрутизирует /api/subscriptions", "HTTP / JSON")
+Rel_D(proxy, users_service, "Маршрутизирует /api/users, /api/auth", "HTTP / JSON")
+Rel_D(proxy, events_service, "Маршрутизирует /api/events", "HTTP / JSON")
+Rel_D(proxy, recommendations_service, "Маршрутизирует /api/recommendations", "HTTP / JSON")
+Rel_D(proxy, movies_service, "Маршрутизирует /api/movies", "HTTP / JSON")
+Rel_D(proxy, cdn, "Проксирует видеопоток клиенту", "HTTPS / HLS")
+
+' Доступ к базам данных
+Rel_D(payments_service, payments_db, "Читает/пишет транзакции", "SQL")
+Rel_D(subscriptions_service, subscriptions_db, "Читает/пишет подписки", "SQL")
+Rel_D(users_service, users_db, "Читает/пишет данные", "SQL")
+Rel_D(recommendations_service, recommendations_db, "Читает/пишет кэшированные подборки", "Redis / SQL")
+Rel_D(movies_service, movies_db, "Читает/пишет метаданные", "SQL")
+
+' Асинхронное взаимодействие (Kafka)
+Rel_D(payments_service, kafka, "Публикует события оплат", "TCP / Kafka Protocol")
+Rel_D(users_service, kafka, "Публикует события пользователей", "TCP / Kafka Protocol")
+Rel_D(movies_service, kafka, "Публикует изменения каталога", "TCP / Kafka Protocol")
+Rel_D(events_service, kafka, "Публикует аналитику кликов/просмотров", "TCP / Kafka Protocol")
+
+' Интеграция с внешней рекомендательной системой (AMQP)
+Rel_D(events_service, rec_queue_in, "Транслирует события из Kafka во внешнюю очередь", "AMQP / JSON")
+Rel_U(rec_queue_out, recommendations_service, "Передает готовые рекомендации", "AMQP / JSON")
+
+' Взаимодействие внутри внешней системы
+Rel_D(rec_queue_in, rec_engine, "Передает сообщения на обработку", "Internal Protocol")
+Rel_D(rec_engine, rec_queue_out, "Отправляет результаты расчета", "Internal Protocol")
+
+' Внешние интеграции бэкенда (указываем точные направления)
+Rel_L(payments_service, payment_gateway, "Проводит транзакции", "HTTPS / REST")
+Rel_R(movies_service, online_cinemas, "Агрегирует контент и метаданные", "HTTPS / REST")
+Rel_R(movies_service, cdn, "Управляет файлами контента", "S3 API")
+
+' Направляющие скрытые связи для выравнивания слоев и исключения пересечений
+payment_gateway -[hidden]r-> payments_service
+
+payments_service -[hidden]r-> subscriptions_service
+subscriptions_service -[hidden]r-> users_service
+users_service -[hidden]r-> kafka
+kafka -[hidden]r-> events_service
+events_service -[hidden]r-> recommendations_service
+recommendations_service -[hidden]r-> movies_service
+
+payments_service -[hidden]d-> payments_db
+subscriptions_service -[hidden]d-> subscriptions_db
+users_service -[hidden]d-> users_db
+recommendations_service -[hidden]d-> recommendations_db
+movies_service -[hidden]d-> movies_db
+
+payments_db -[hidden]r-> subscriptions_db
+subscriptions_db -[hidden]r-> users_db
+users_db -[hidden]r-> recommendations_db
+recommendations_db -[hidden]r-> movies_db
+
+events_service -[hidden]d-> rec_queue_in
+recommendations_db -[hidden]d-> rec_queue_out
+
+movies_service -[hidden]r-> cdn
+movies_service -[hidden]r-> online_cinemas
+cdn -[hidden]d-> online_cinemas
+
+@enduml
+
